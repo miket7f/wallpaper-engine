@@ -23,24 +23,47 @@ def fetch_weather_from_page():
         soup = BeautifulSoup(r.text, 'html.parser')
         page_text = soup.get_text()
         
-        # Helper function to extract text values using regex matching
+        # Helper 1: Extract string
         def extract_value(label_pattern, fallback="N/A"):
             match = re.search(label_pattern, page_text)
             if match:
-                # Clean up extracted line breaks or excessive spaces
                 return re.sub(r'\s+', ' ', match.group(1)).strip()
             return fallback
 
-        # Regex patterns targeted at the exact strings found on the NDBC station page
+        # Helper 2: Convert Fahrenheit to Celsius safely
+        def to_celsius(temp_str):
+            if temp_str == "N/A" or temp_str == "-": return "N/A"
+            match = re.search(r"([-+]?\d*\.\d+|\d+)", temp_str)
+            if match:
+                val = float(match.group(1))
+                if "F" in temp_str:
+                    c_val = (val - 32) * 5.0 / 9.0
+                    return f"{c_val:.1f} °C"
+                return f"{val:.1f} °C" # In case NOAA unexpectedly switches to metric
+            return temp_str
+
         wind_spd = extract_value(r"Wind Speed \(WSPD\):\s*([^\n\r]+)")
         wind_gst = extract_value(r"Wind Gust \(GST\):\s*([^\n\r]+)")
         wave_ht = extract_value(r"Significant Wave Height \(WVHT\):\s*([^\n\r]+)")
         dom_pd = extract_value(r"Dominant Wave Period \(DPD\):\s*([^\n\r]+)")
-        air_temp = extract_value(r"Air Temperature \(ATMP\):\s*([^\n\r]+)")
-        water_temp = extract_value(r"Water Temperature \(WTMP\):\s*([^\n\r]+)")
         
-        return (f"Station {STATION}  |  Wind: {wind_spd} (Gust: {wind_gst})  |  "
-                f"Waves: {wave_ht} @ {dom_pd}  |  Air: {air_temp}  |  Water: {water_temp}")
+        # Apply C conversion
+        air_temp = to_celsius(extract_value(r"Air Temperature \(ATMP\):\s*([^\n\r]+)"))
+        water_temp = to_celsius(extract_value(r"Water Temperature \(WTMP\):\s*([^\n\r]+)"))
+        
+        # Clean up missing wave period data
+        if dom_pd == "N/A" or "-" in dom_pd:
+            # Fallback to Average Period if Dominant is missing
+            avg_pd = extract_value(r"Average Wave Period \(APD\):\s*([^\n\r]+)")
+            if avg_pd != "N/A" and "-" not in avg_pd:
+                 wave_str = f"{wave_ht} @ {avg_pd} (Avg)"
+            else:
+                 wave_str = f"{wave_ht}" # Hide the period entirely if both are missing
+        else:
+            wave_str = f"{wave_ht} @ {dom_pd}"
+        
+        return (f"Station {STATION}   |   Wind: {wind_spd} (Gust: {wind_gst})   |   "
+                f"Waves: {wave_str}   |   Air: {air_temp}   |   Water: {water_temp}")
                 
     except Exception as e:
         print(f"Scraping failed: {e}")
