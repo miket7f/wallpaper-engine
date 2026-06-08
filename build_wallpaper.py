@@ -1,31 +1,50 @@
 import os
 import glob
+import re
 import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+from bs4 import BeautifulSoup
 from datetime import datetime
 
 STATION = "41041"
 IMAGE_URL = f"https://www.ndbc.noaa.gov/buoycam.php?station={STATION}"
-DATA_URL = f"https://www.ndbc.noaa.gov/data/realtime2/{STATION}.txt"
+STATION_URL = f"https://www.ndbc.noaa.gov/station_page.php?station={STATION}"
 RAW_DIR = "raw_images"
 OUTPUT_FILE = "latest_wallpaper.jpg"
-MAX_IMAGES = 5  # Mathematically ideal: (300px * 5) scaled to 1920 width = 1000px height.
+MAX_IMAGES = 5  # 5 images * 200px (scaled) = 1000px height. Leaves 80px for text canvas.
 
-def fetch_weather():
+def fetch_weather_from_page():
     try:
-        r = requests.get(DATA_URL, timeout=10)
-        lines = r.text.split('\n')
-        headers = lines[0].replace("#", "").split()
-        data = lines[2].split()
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(STATION_URL, headers=headers, timeout=15)
+        r.raise_for_status()
         
-        def get_val(k):
-            try: return data[headers.index(k)]
-            except ValueError: return "N/A"
-            
-        return f"Station {STATION}   |   Wind: {get_val('WSPD')} m/s   |   Waves: {get_val('WVHT')} m   |   Air: {get_val('ATMP')} °C   |   Water: {get_val('WTMP')} °C"
-    except Exception:
-        return f"Station {STATION} | Weather data unavailable"
+        soup = BeautifulSoup(r.text, 'html.parser')
+        page_text = soup.get_text()
+        
+        # Helper function to extract text values using regex matching
+        def extract_value(label_pattern, fallback="N/A"):
+            match = re.search(label_pattern, page_text)
+            if match:
+                # Clean up extracted line breaks or excessive spaces
+                return re.sub(r'\s+', ' ', match.group(1)).strip()
+            return fallback
+
+        # Regex patterns targeted at the exact strings found on the NDBC station page
+        wind_spd = extract_value(r"Wind Speed \(WSPD\):\s*([^\n\r]+)")
+        wind_gst = extract_value(r"Wind Gust \(GST\):\s*([^\n\r]+)")
+        wave_ht = extract_value(r"Significant Wave Height \(WVHT\):\s*([^\n\r]+)")
+        dom_pd = extract_value(r"Dominant Wave Period \(DPD\):\s*([^\n\r]+)")
+        air_temp = extract_value(r"Air Temperature \(ATMP\):\s*([^\n\r]+)")
+        water_temp = extract_value(r"Water Temperature \(WTMP\):\s*([^\n\r]+)")
+        
+        return (f"Station {STATION}  |  Wind: {wind_spd} (Gust: {wind_gst})  |  "
+                f"Waves: {wave_ht} @ {dom_pd}  |  Air: {air_temp}  |  Water: {water_temp}")
+                
+    except Exception as e:
+        print(f"Scraping failed: {e}")
+        return f"Station {STATION} | Weather data temporarily unavailable"
 
 def main():
     os.makedirs(RAW_DIR, exist_ok=True)
@@ -63,7 +82,6 @@ def main():
         
     # 4. Scale to exactly 1920 width
     target_w = 1920
-    # Dynamic height calculation handles the first few hours when < 5 images exist
     target_h = int(stitch_h * (target_w / stitch_w)) 
     stitch_resized = stitch.resize((target_w, target_h), Image.Resampling.LANCZOS)
     
@@ -77,27 +95,22 @@ def main():
     # 6. Overlay Weather Data in the top black bar
     draw = ImageDraw.Draw(final_img)
     try:
-        # Using a slightly larger font size to fill the 80px bar elegantly
-        font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 34)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 32)
     except IOError:
         font = ImageFont.load_default()
         
-    weather_str = fetch_weather()
+    weather_str = fetch_weather_from_page()
     
-    # Calculate text centering
-    # Using textbbox which is the modern standard for Pillow text measurement
+    # Calculate text centering using modern Pillow metrics
     bbox = draw.textbbox((0, 0), weather_str, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     
     text_x = (1920 - text_w) // 2
     
-    # Center the text perfectly within whatever space is left at the top
-    # y_offset will be 80 once the repo has 5 images.
     if y_offset > 0:
         text_y = (y_offset - text_h) // 2
     else:
-        # Fallback if the canvas fills up entirely (e.g., if you change MAX_IMAGES later)
         text_y = 20 
         
     draw.text((text_x, text_y), weather_str, fill="white", font=font)
