@@ -1,5 +1,58 @@
 name: Generate Wallpaper
 on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main code
+        uses: actions/checkout@v4
+        with:
+          path: main-repo
+
+      - name: Checkout data branch
+        uses: actions/checkout@v4
+        with:
+          ref: wallpaper-data
+          path: data-repo
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install Pillow requests beautifulsoup4
+          sudo apt-get install -y fonts-liberation
+
+      - name: Run Script
+        run: |
+          mkdir -p main-repo/raw_images
+          if [ -d "data-repo/raw_images" ]; then
+            cp -a data-repo/raw_images/. main-repo/raw_images/
+          fi
+          cd main-repo
+          python build_wallpaper.py
+          
+      - name: Publish to Data Branch
+        run: |
+          mkdir deploy
+          cp -r main-repo/raw_images deploy/
+          cp main-repo/latest_wallpaper.jpg deploy/ || echo "No wallpaper created"
+          cd deploy
+          git init
+          git checkout -b wallpaper-data
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit -m "Hourly Update: $(date -u)"
+          git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git wallpaper-dataname: Generate Wallpaper
+on:
   schedule:
     - cron: '5 * * * *' # Run at 5 minutes past the hour
   workflow_dispatch:
