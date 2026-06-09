@@ -12,7 +12,10 @@ IMAGE_URL = f"https://www.ndbc.noaa.gov/buoycam.php?station={STATION}"
 STATION_URL = f"https://www.ndbc.noaa.gov/station_page.php?station={STATION}"
 RAW_DIR = "raw_images"
 OUTPUT_FILE = "latest_wallpaper.jpg"
-MAX_IMAGES = 5  # 5 images * 200px (scaled) = 1000px height. Leaves 80px for text canvas.
+
+# Decoupled logic: Store 5 days (120 hours) but only display 5 images
+MAX_DISPLAY_IMAGES = 5  
+MAX_STORED_IMAGES = 120 
 
 def fetch_weather_from_page():
     try:
@@ -23,14 +26,12 @@ def fetch_weather_from_page():
         soup = BeautifulSoup(r.text, 'html.parser')
         page_text = soup.get_text()
         
-        # Helper 1: Extract string
         def extract_value(label_pattern, fallback="N/A"):
             match = re.search(label_pattern, page_text)
             if match:
                 return re.sub(r'\s+', ' ', match.group(1)).strip()
             return fallback
 
-        # Helper 2: Convert Fahrenheit to Celsius safely
         def to_celsius(temp_str):
             if temp_str == "N/A" or temp_str == "-": return "N/A"
             match = re.search(r"([-+]?\d*\.\d+|\d+)", temp_str)
@@ -39,7 +40,7 @@ def fetch_weather_from_page():
                 if "F" in temp_str:
                     c_val = (val - 32) * 5.0 / 9.0
                     return f"{c_val:.1f} °C"
-                return f"{val:.1f} °C" # In case NOAA unexpectedly switches to metric
+                return f"{val:.1f} °C"
             return temp_str
 
         wind_spd = extract_value(r"Wind Speed \(WSPD\):\s*([^\n\r]+)")
@@ -47,18 +48,15 @@ def fetch_weather_from_page():
         wave_ht = extract_value(r"Significant Wave Height \(WVHT\):\s*([^\n\r]+)")
         dom_pd = extract_value(r"Dominant Wave Period \(DPD\):\s*([^\n\r]+)")
         
-        # Apply C conversion
         air_temp = to_celsius(extract_value(r"Air Temperature \(ATMP\):\s*([^\n\r]+)"))
         water_temp = to_celsius(extract_value(r"Water Temperature \(WTMP\):\s*([^\n\r]+)"))
         
-        # Clean up missing wave period data
         if dom_pd == "N/A" or "-" in dom_pd:
-            # Fallback to Average Period if Dominant is missing
             avg_pd = extract_value(r"Average Wave Period \(APD\):\s*([^\n\r]+)")
             if avg_pd != "N/A" and "-" not in avg_pd:
                  wave_str = f"{wave_ht} @ {avg_pd} (Avg)"
             else:
-                 wave_str = f"{wave_ht}" # Hide the period entirely if both are missing
+                 wave_str = f"{wave_ht}" 
         else:
             wave_str = f"{wave_ht} @ {dom_pd}"
         
@@ -88,14 +86,16 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     new_img.save(os.path.join(RAW_DIR, f"{timestamp}.jpg"))
 
-    # 2. Manage state
+    # 2. Manage state (Keep up to 120 images)
     images = sorted(glob.glob(os.path.join(RAW_DIR, "*.jpg")))
-    while len(images) > MAX_IMAGES:
+    while len(images) > MAX_STORED_IMAGES:
         os.remove(images.pop(0))
 
-    imgs = [Image.open(img) for img in reversed(images)] # Newest on top
+    # 3. Select only the newest images for the wallpaper
+    wallpaper_images = images[-MAX_DISPLAY_IMAGES:]
+    imgs = [Image.open(img) for img in reversed(wallpaper_images)] # Newest on top
     
-    # 3. Build the vertical stitch
+    # 4. Build the vertical stitch
     stitch_w = 2880
     stitch_h = 300 * len(imgs)
     stitch = Image.new('RGB', (stitch_w, stitch_h))
@@ -103,19 +103,18 @@ def main():
     for i, img in enumerate(imgs):
         stitch.paste(img, (0, i * 300))
         
-    # 4. Scale to exactly 1920 width
+    # 5. Scale to exactly 1920 width
     target_w = 1920
     target_h = int(stitch_h * (target_w / stitch_w)) 
     stitch_resized = stitch.resize((target_w, target_h), Image.Resampling.LANCZOS)
     
-    # 5. Create final 1080p canvas (Solid Black)
+    # 6. Create final 1080p canvas (Solid Black)
     final_img = Image.new('RGB', (1920, 1080), (0, 0, 0))
     
-    # Paste images at the bottom, leaving the black space at the top
     y_offset = 1080 - target_h
     final_img.paste(stitch_resized, (0, y_offset))
     
-    # 6. Overlay Weather Data in the top black bar
+    # 7. Overlay Weather Data
     draw = ImageDraw.Draw(final_img)
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 32)
@@ -124,7 +123,6 @@ def main():
         
     weather_str = fetch_weather_from_page()
     
-    # Calculate text centering using modern Pillow metrics
     bbox = draw.textbbox((0, 0), weather_str, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
@@ -139,7 +137,7 @@ def main():
     draw.text((text_x, text_y), weather_str, fill="white", font=font)
     
     final_img.save(OUTPUT_FILE)
-    print(f"Wallpaper generated successfully. Final resolution: {final_img.size}")
+    print(f"Wallpaper generated successfully. Stored images: {len(images)}. Displayed: {len(imgs)}.")
 
 if __name__ == "__main__":
     main()
